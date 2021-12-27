@@ -16,10 +16,113 @@
 #include <sys/wait.h>
 
 #include <X11/Xlib.h>
+#include <alsa/asoundlib.h>
+#include <alsa/control.h>
 
-char *tzargentina = "America/Buenos_Aires";
-char *tzutc = "UTC";
-char *tzberlin = "Europe/Berlin";
+int
+parse_netdev(unsigned long long int *receivedabs, unsigned long long int *sentabs)
+{
+	char buf[255];
+	char *datastart;
+	static int bufsize;
+	int rval;
+	FILE *devfd;
+	unsigned long long int receivedacc, sentacc;
+
+	bufsize = 255;
+	devfd = fopen("/proc/net/dev", "r");
+	rval = 1;
+
+	// Ignore the first two lines of the file
+	fgets(buf, bufsize, devfd);
+	fgets(buf, bufsize, devfd);
+
+	while (fgets(buf, bufsize, devfd)) {
+	    if ((datastart = strstr(buf, "lo:")) == NULL) {
+		datastart = strstr(buf, ":");
+
+		// With thanks to the conky project at http://conky.sourceforge.net/
+		sscanf(datastart + 1, "%llu  %*d     %*d  %*d  %*d  %*d   %*d        %*d       %llu",\
+		       &receivedacc, &sentacc);
+		*receivedabs += receivedacc;
+		*sentabs += sentacc;
+		rval = 0;
+	    }
+	}
+
+	fclose(devfd);
+	return rval;
+}
+
+void
+calculate_speed(char *speedstr, unsigned long long int newval, unsigned long long int oldval)
+{
+	double speed;
+	speed = (newval - oldval) / 1024.0;
+	if (speed > 1024.0) {
+	    speed /= 1024.0;
+	    sprintf(speedstr, "%.3f MB/s", speed);
+	} else {
+	    sprintf(speedstr, "%.2f KB/s", speed);
+	}
+}
+
+char *
+get_netusage(unsigned long long int *rec, unsigned long long int *sent)
+{
+	unsigned long long int newrec, newsent;
+	newrec = newsent = 0;
+	char downspeedstr[15], upspeedstr[15];
+	static char retstr[42];
+	int retval;
+
+	retval = parse_netdev(&newrec, &newsent);
+	if (retval) {
+	    fprintf(stdout, "Error when parsing /proc/net/dev file.\n");
+	    exit(1);
+	}
+
+	calculate_speed(downspeedstr, newrec, *rec);
+	calculate_speed(upspeedstr, newsent, *sent);
+
+	sprintf(retstr, "down: %s up: %s", downspeedstr, upspeedstr);
+
+	*rec = newrec;
+	*sent = newsent;
+	return retstr;
+}
+
+int
+get_vol(void)
+{
+    int vol;
+    snd_hctl_t *hctl;
+    snd_ctl_elem_id_t *id;
+    snd_ctl_elem_value_t *control;
+
+// To find card and subdevice: /proc/asound/, aplay -L, amixer controls
+    snd_hctl_open(&hctl, "hw:0", 0);
+    snd_hctl_load(hctl);
+
+    snd_ctl_elem_id_alloca(&id);
+    snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+
+// amixer controls
+    snd_ctl_elem_id_set_name(id, "Master Playback Volume");
+
+    snd_hctl_elem_t *elem = snd_hctl_find_elem(hctl, id);
+
+    snd_ctl_elem_value_alloca(&control);
+    snd_ctl_elem_value_set_id(control, id);
+
+    snd_hctl_elem_read(elem, control);
+    vol = (int)snd_ctl_elem_value_get_integer(control,0);
+
+    snd_hctl_close(hctl);
+    return vol;
+}
+
+char *tzbr = "America/Sao_Paulo";
 
 static Display *dpy;
 
@@ -175,6 +278,17 @@ gettemperature(char *base, char *sensor)
 	return smprintf("%02.0f°C", atof(co) / 1000);
 }
 
+
+char *
+up() {
+    struct sysinfo info;
+    int h,m = 0;
+    sysinfo(&info);
+    h = info.uptime/3600;
+    m = (info.uptime - h*3600 )/60;
+    return smprintf("%dh%dm",h,m);
+}
+
 int
 main(void)
 {
@@ -186,38 +300,30 @@ main(void)
 	char *tmutc;
 	char *tmbln;
 	char *t0, *t1, *t2;
+	static unsigned long long int rec, sent;
 
 	if (!(dpy = XOpenDisplay(NULL))) {
 		fprintf(stderr, "dwmstatus: cannot open display.\n");
 		return 1;
 	}
 
-	for (;;sleep(60)) {
+	parse_netdev(&rec, &sent);
+	for (;;sleep(1)) {
 		avgs = loadavg();
-		bat = getbattery("/sys/class/power_supply/BAT0");
-		bat1 = getbattery("/sys/class/power_supply/BAT1");
-		tmar = mktimes("%H:%M", tzargentina);
-		tmutc = mktimes("%H:%M", tzutc);
-		tmbln = mktimes("KW %W %a %d %b %H:%M %Z %Y", tzberlin);
-		t0 = gettemperature("/sys/devices/virtual/hwmon/hwmon0", "temp1_input");
-		t1 = gettemperature("/sys/devices/virtual/hwmon/hwmon2", "temp1_input");
-		t2 = gettemperature("/sys/devices/virtual/hwmon/hwmon4", "temp1_input");
+		uptime = up();
+		vol = get_vol();
+		netstats = get_netusage(&rec, &sent);
+		tbr = mktimes("%a %d %b %H:%M", tzbr);
 
-		status = smprintf("T:%s|%s|%s L:%s B:%s|%s A:%s U:%s %s",
-				t0, t1, t2, avgs, bat, bat1, tmar, tmutc,
-				tmbln);
+		status = smprintf("L: %s | Up: %s | Eth: %s | Vol: %d% | %s",
+				avgs, uptime, netstats, vol, tbr)
 		setstatus(status);
 
-		free(t0);
-		free(t1);
-		free(t2);
 		free(avgs);
-		free(bat);
-		free(bat1);
-		free(tmar);
-		free(tmutc);
-		free(tmbln);
-		free(status);
+		free(uptime);
+		free(netstats);
+		free(vol);
+		free(tbr);
 	}
 
 	XCloseDisplay(dpy);
