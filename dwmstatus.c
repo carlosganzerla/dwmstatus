@@ -14,10 +14,10 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-
+#include <sys/sysinfo.h>
 #include <X11/Xlib.h>
-#include <alsa/asoundlib.h>
-#include <alsa/control.h>
+// #include <alsa/asoundlib.h>
+// #include <alsa/control.h>
 
 int
 parse_netdev(unsigned long long int *receivedabs, unsigned long long int *sentabs)
@@ -92,35 +92,35 @@ get_netusage(unsigned long long int *rec, unsigned long long int *sent)
 	return retstr;
 }
 
-int
-get_vol(void)
-{
-    int vol;
-    snd_hctl_t *hctl;
-    snd_ctl_elem_id_t *id;
-    snd_ctl_elem_value_t *control;
-
-// To find card and subdevice: /proc/asound/, aplay -L, amixer controls
-    snd_hctl_open(&hctl, "hw:0", 0);
-    snd_hctl_load(hctl);
-
-    snd_ctl_elem_id_alloca(&id);
-    snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
-
-// amixer controls
-    snd_ctl_elem_id_set_name(id, "Master Playback Volume");
-
-    snd_hctl_elem_t *elem = snd_hctl_find_elem(hctl, id);
-
-    snd_ctl_elem_value_alloca(&control);
-    snd_ctl_elem_value_set_id(control, id);
-
-    snd_hctl_elem_read(elem, control);
-    vol = (int)snd_ctl_elem_value_get_integer(control,0);
-
-    snd_hctl_close(hctl);
-    return vol;
-}
+// int
+// get_vol(void)
+// {
+//     int vol;
+//     snd_hctl_t *hctl;
+//     snd_ctl_elem_id_t *id;
+//     snd_ctl_elem_value_t *control;
+// 
+// // To find card and subdevice: /proc/asound/, aplay -L, amixer controls
+//     snd_hctl_open(&hctl, "hw:0", 0);
+//     snd_hctl_load(hctl);
+// 
+//     snd_ctl_elem_id_alloca(&id);
+//     snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+// 
+// // amixer controls
+//     snd_ctl_elem_id_set_name(id, "Master Playback Volume");
+// 
+//     snd_hctl_elem_t *elem = snd_hctl_find_elem(hctl, id);
+// 
+//     snd_ctl_elem_value_alloca(&control);
+//     snd_ctl_elem_value_set_id(control, id);
+// 
+//     snd_hctl_elem_read(elem, control);
+//     vol = (int)snd_ctl_elem_value_get_integer(control,0);
+// 
+//     snd_hctl_close(hctl);
+//     return vol;
+// }
 
 char *tzbr = "America/Sao_Paulo";
 
@@ -217,57 +217,6 @@ readfile(char *base, char *file)
 }
 
 char *
-getbattery(char *base)
-{
-	char *co, status;
-	int descap, remcap;
-
-	descap = -1;
-	remcap = -1;
-
-	co = readfile(base, "present");
-	if (co == NULL)
-		return smprintf("");
-	if (co[0] != '1') {
-		free(co);
-		return smprintf("not present");
-	}
-	free(co);
-
-	co = readfile(base, "charge_full_design");
-	if (co == NULL) {
-		co = readfile(base, "energy_full_design");
-		if (co == NULL)
-			return smprintf("");
-	}
-	sscanf(co, "%d", &descap);
-	free(co);
-
-	co = readfile(base, "charge_now");
-	if (co == NULL) {
-		co = readfile(base, "energy_now");
-		if (co == NULL)
-			return smprintf("");
-	}
-	sscanf(co, "%d", &remcap);
-	free(co);
-
-	co = readfile(base, "status");
-	if (!strncmp(co, "Discharging", 11)) {
-		status = '-';
-	} else if(!strncmp(co, "Charging", 8)) {
-		status = '+';
-	} else {
-		status = '?';
-	}
-
-	if (remcap < 0 || descap < 0)
-		return smprintf("invalid");
-
-	return smprintf("%.0f%%%c", ((float)remcap / (float)descap) * 100, status);
-}
-
-char *
 gettemperature(char *base, char *sensor)
 {
 	char *co;
@@ -294,12 +243,9 @@ main(void)
 {
 	char *status;
 	char *avgs;
-	char *bat;
-	char *bat1;
-	char *tmar;
-	char *tmutc;
-	char *tmbln;
-	char *t0, *t1, *t2;
+	char *uptime;
+	char *netstats;
+	char *tbr;
 	static unsigned long long int rec, sent;
 
 	if (!(dpy = XOpenDisplay(NULL))) {
@@ -311,18 +257,15 @@ main(void)
 	for (;;sleep(1)) {
 		avgs = loadavg();
 		uptime = up();
-		vol = get_vol();
 		netstats = get_netusage(&rec, &sent);
 		tbr = mktimes("%a %d %b %H:%M", tzbr);
 
-		status = smprintf("L: %s | Up: %s | Eth: %s | Vol: %d% | %s",
-				avgs, uptime, netstats, vol, tbr)
+		status = smprintf("L: %s | Up: %s | Eth: %s | %s",
+				avgs, uptime, netstats, tbr);
 		setstatus(status);
 
 		free(avgs);
 		free(uptime);
-		free(netstats);
-		free(vol);
 		free(tbr);
 	}
 
